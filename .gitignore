@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Logs & large experiment data (never commit)
+*.log
+*.tsv
+*.pkl
+*.pt
+*.safetensors
+sweep_results/
+fix_rerun_results/
+c4_results/
+
+# Jupyter / editors / OS
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
