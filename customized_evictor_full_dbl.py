@@ -13,6 +13,8 @@ class CustomizedARCEvictor(Evictor):
         self.p = 0
         _pcf = float(os.environ.get('ARC_P_CAP_FRAC', '0.5'))
         self.p_cap = int(self.max_size * _pcf) if _pcf <= 1.0 else int(_pcf)  # C4: soft-cap p (<=1 frac, >1 absolute)
+        _gcb2 = int(os.environ.get('ARC_GHOST_CAP_B2', '0'))
+        self.ghost_cap_B2 = _gcb2 if _gcb2 > 0 else self.max_size
         self.T1_table = {}
         self.T2_table = {}
         self.T1_queue = []
@@ -22,6 +24,13 @@ class CustomizedARCEvictor(Evictor):
         self.T1_active = set()
         self.T2_active = set()
         self._pending_ghost = deque()
+        # ---- T2 internal frequency counter (bypasses ghost/p, pure T2 eviction) ----
+        self.t2_freq_enable = int(os.environ.get('ARC_T2_FREQ_ENABLE', '0')) == 1
+        self.t2_freq_window = int(os.environ.get('ARC_T2_FREQ_WINDOW', '8'))
+        self.t2_freq_decay = float(os.environ.get('ARC_T2_FREQ_DECAY', '0.5'))
+        self.T2_freq = {}          # block_id -> freq (raw value at last touch, lazy-decayed)
+        self.T2_last_touch = {}    # block_id -> step (global step at last touch)
+        self._step = 0             # monotonic step, +1 per T2 eviction (lazy-decay clock)
 
     def __contains__(self, block_id):
         return block_id in self.T1_table or block_id in self.T2_table
@@ -138,13 +147,42 @@ class CustomizedARCEvictor(Evictor):
                 return bi, ch
         raise ValueError("T1 empty")
 
+    def _t2_freq_of(self, bi):
+        """Lazy-decayed view of freq (read-only, no write-back)."""
+        f = self.T2_freq.get(bi, 1.0)
+        lt = self.T2_last_touch.get(bi, self._step)
+        gap = self._step - lt
+        if gap > 0:
+            f = f * (self.t2_freq_decay ** gap)
+        return f
+
     def _evict_from_T2(self):
-        while self.T2_queue:
+        if not self.t2_freq_enable:
+            while self.T2_queue:
+                la, nt, bi, ch = heapq.heappop(self.T2_queue)
+                if bi in self.T2_table and self.T2_table[bi].last_accessed == la:
+                    self.T2_table.pop(bi)
+                    return bi, ch
+            raise ValueError("T2 empty")
+        self._step += 1
+        # window + min-freq eviction: pop up to K valid candidates near LRU head,
+        # evict the min-freq one, push the rest back (no LRU position refresh)
+        cands = []
+        while self.T2_queue and len(cands) < self.t2_freq_window:
             la, nt, bi, ch = heapq.heappop(self.T2_queue)
             if bi in self.T2_table and self.T2_table[bi].last_accessed == la:
-                self.T2_table.pop(bi)
-                return bi, ch
-        raise ValueError("T2 empty")
+                f = self._t2_freq_of(bi)
+                cands.append((f, la, nt, bi, ch))
+        if not cands:
+            raise ValueError("T2 empty")
+        cands.sort(key=lambda x: (x[0], x[1]))  # min freq first, then LRU-oldest
+        f, la, nt, bi, ch = cands[0]
+        self.T2_table.pop(bi)
+        self.T2_freq.pop(bi, None)
+        self.T2_last_touch.pop(bi, None)
+        for _, la2, nt2, bi2, ch2 in cands[1:]:
+            heapq.heappush(self.T2_queue, (la2, nt2, bi2, ch2))
+        return bi, ch
 
     def _add_to_T1(self, bi, m):
         self.T1_table[bi] = m
@@ -157,13 +195,22 @@ class CustomizedARCEvictor(Evictor):
         heapq.heappush(self.T2_queue,
                        (m.last_accessed, -m.num_hashed_tokens, bi,
                         m.content_hash))
+        if self.t2_freq_enable:
+            # re-enter T2 after a hit (release): lazy-decay then +1
+            # first entry into T2 (T1HIT / B1 / B2 promotion): freq = 1
+            if bi in self.T2_freq:
+                f = self._t2_freq_of(bi) + 1.0
+            else:
+                f = 1.0
+            self.T2_freq[bi] = f
+            self.T2_last_touch[bi] = self._step
 
     def _prune_ghosts(self):
         while (len(self.T1_table) + len(self.T1_active) +
                len(self.B1)) > self.max_size and self.B1:
             self.B1.popitem(last=False)
         while (len(self.T2_table) + len(self.T2_active) +
-               len(self.B2)) > self.max_size and self.B2:
+               len(self.B2)) > self.ghost_cap_B2 and self.B2:
             self.B2.popitem(last=False)
 
 class CustomizedDBLEvictor(Evictor):
