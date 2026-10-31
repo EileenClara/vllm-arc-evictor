@@ -22,12 +22,14 @@ from collections import deque
 from vllm.core.customized_evictor import CustomizedARCEvictor
 from vllm.v1.core.kv_cache_utils import KVCacheBlock, get_block_hash
 
-# 通过环境变量 VLLM_EVICTOR 选择算法内核，实现 ARC/LRU/DBL 三方公平对比。
+# 通过环境变量 VLLM_EVICTOR 选择算法内核，实现 ARC/LRU/DBL/2Q+ghost 四方公平对比。
 # 同一个"壳"，只有 _Evictor 不同——保证对比时唯一变量是驱逐算法。
 if os.environ.get('VLLM_EVICTOR', 'ARC') == 'LRU':
     from vllm.core.lru_evictor import LRUEvictor as _Evictor
 elif os.environ.get('VLLM_EVICTOR', 'ARC') == 'DBL':
     from vllm.core.customized_evictor import DBLEvictorAdapter as _Evictor
+elif os.environ.get('VLLM_EVICTOR', 'ARC') == 'TWOQ_GHOST':
+    from vllm.core.customized_evictor import Customized2QGhostEvictor as _Evictor
 else:
     _Evictor = CustomizedARCEvictor
 

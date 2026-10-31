@@ -46,6 +46,9 @@ LRU), because `k = 0` leaves T1 without a floor.
 The two-queue structure alone already captures 89% of ARC's advantage over LRU. The ghost
 adds the rest only when it is decoupled from the queue-size budget.
 
+The long form — including the three attempts that failed, and what each failure established
+— is in [docs/research-notes.md](docs/research-notes.md).
+
 ---
 
 ## Results
